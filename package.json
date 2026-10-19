@@ -1,0 +1,67 @@
+{
+  "name": "local-project-chat",
+  "version": "1.0.9",
+  "private": true,
+  "description": "A localhost web chat assistant powered by Ollama",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tibormartuljak10-spec/Local-AI-assistent.git"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "start:desktop": "electron .",
+    "dist:win": "electron-builder --win nsis --publish never",
+    "release:win": "electron-builder --win nsis --publish always",
+    "test": "node --test"
+  },
+  "main": "desktop\\main.js",
+  "build": {
+    "appId": "com.localprojectassistant.windows",
+    "productName": "Local Project Assistant",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "tibormartuljak10-spec",
+        "repo": "Local-AI-assistent",
+        "releaseType": "release"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "server.js",
+      "public/**/*",
+      "desktop/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Local-Project-Assistant-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}
