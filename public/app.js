@@ -215,7 +215,7 @@ function finishActivity(success) {
   elements.activityLiveLabel.textContent = success ? "Done" : "Check";
 }
 
-async function readChatActivityStream(response) {
+async function readChatActivityStream(response, onToken) {
   if (!response.body) throw new Error("Live project activity is not available in this browser.");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -233,6 +233,7 @@ async function readChatActivityStream(response) {
     if (!dataLines.length) return;
     const data = JSON.parse(dataLines.join("\n"));
     if (eventName === "activity") updateActivity(data);
+    else if (eventName === "token" && typeof data.token === "string") onToken(data.token);
     else if (eventName === "result") result = data;
     else if (eventName === "error") throw new Error(data.error || "The assistant request failed.");
     else if (eventName === "done") finished = true;
@@ -968,6 +969,7 @@ function addMessage(role, content) {
   else row.append(avatar, body);
   elements.messages.append(row);
   scrollToBottom();
+  return text;
 }
 
 function appendAssistantContent(container, content) {
@@ -1056,6 +1058,7 @@ async function sendMessage(text) {
   resizeInput();
   resetActivity();
   pending = true;
+  let streamingAssistant = null;
   elements.typing.classList.remove("hidden");
   updateSendButton();
   scrollToBottom();
@@ -1065,7 +1068,7 @@ async function sendMessage(text) {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json", accept: "text/event-stream" },
-      body: JSON.stringify({ workspaceId, model: selectedModel, messages: history.slice(-40) })
+      body: JSON.stringify({ workspaceId, model: selectedModel, messages: history.slice(-24) })
     });
     if (!response.ok) {
       const result = await response.json();
@@ -1074,11 +1077,24 @@ async function sendMessage(text) {
       throw error;
     }
     const result = response.headers.get("content-type")?.includes("text/event-stream")
-      ? await readChatActivityStream(response)
+      ? await readChatActivityStream(response, (token) => {
+        if (!streamingAssistant) {
+          streamingAssistant = addMessage("assistant", "");
+          streamingAssistant.closest(".message-row").classList.add("streaming");
+        }
+        streamingAssistant.textContent += token;
+        scrollToBottom();
+      })
       : await response.json();
     if (typeof result.message !== "string") throw new Error("The assistant returned an invalid response.");
+    if (streamingAssistant) {
+      streamingAssistant.replaceChildren();
+      appendAssistantContent(streamingAssistant, result.message);
+      streamingAssistant.closest(".message-row").classList.remove("streaming");
+    } else {
+      addMessage("assistant", result.message);
+    }
     history.push({ role: "assistant", content: result.message });
-    addMessage("assistant", result.message);
     await persistCurrentChat();
   } catch (error) {
     updateActivity({
@@ -1086,7 +1102,12 @@ async function sendMessage(text) {
       message: `Request failed · ${error.message}`,
       status: "error"
     });
-    addMessage("assistant", `I couldn't complete that request. ${error.message}`);
+    if (streamingAssistant) {
+      streamingAssistant.closest(".message-row").classList.remove("streaming");
+      streamingAssistant.textContent += `\n\n[Response interrupted: ${error.message}]`;
+    } else {
+      addMessage("assistant", `I couldn't complete that request. ${error.message}`);
+    }
     if (error.status === 410) {
       workspaceId = null;
       updateFolderDetails(null);

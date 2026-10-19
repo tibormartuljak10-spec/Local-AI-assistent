@@ -25,7 +25,7 @@ const MAX_STORED_CHATS_PER_USER = 200;
 const PASSWORD_HASH_BYTES = 64;
 const MAX_STORED_CHAT_BYTES = 256 * 1024;
 const MODEL_CACHE_TTL_MS = 15000;
-const DEFAULT_CONTEXT_LENGTH = 32768;
+const DEFAULT_CONTEXT_LENGTH = 8192;
 const CHAT_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_TOOL_ROUNDS = 8;
 const MAX_TOOL_CALLS_PER_ROUND = 6;
@@ -749,6 +749,96 @@ async function ollamaFetch(baseUrl, route, options = {}) {
   return payload;
 }
 
+async function ollamaChatStream(baseUrl, body, onToken) {
+  const timeoutMs = CHAT_TIMEOUT_MS;
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch (error) {
+    if (error.name === "TimeoutError") {
+      throw new Error(`Ollama did not respond within ${Math.round(timeoutMs / 1000)} seconds. Check that Ollama is running.`);
+    }
+    throw new Error(
+      `Cannot reach Ollama at ${baseUrl}. Open the Ollama app, or run "ollama serve" in a separate terminal. ` +
+      `Then check that a model is installed with "ollama list".`
+    );
+  }
+
+  if (!response.ok) {
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error("Ollama returned an invalid response.");
+    }
+    throw new Error(payload.error || `Ollama returned HTTP ${response.status}.`);
+  }
+
+  if (!response.headers.get("content-type")?.includes("ndjson")) {
+    try {
+      const payload = await response.json();
+      if (typeof payload.message?.content === "string" && payload.message.content) onToken(payload.message.content);
+      return payload;
+    } catch {
+      throw new Error("Ollama returned an invalid response.");
+    }
+  }
+
+  if (!response.body) throw new Error("Ollama did not provide a response stream.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let toolCalls = [];
+  let streamError = null;
+
+  function processLine(line) {
+    if (!line.trim()) return;
+    let chunk;
+    try {
+      chunk = JSON.parse(line);
+    } catch {
+      throw new Error("Ollama returned an invalid streaming response.");
+    }
+    if (chunk.error) {
+      streamError = chunk.error;
+      return;
+    }
+    const message = chunk.message;
+    if (typeof message?.content === "string" && message.content) {
+      content += message.content;
+      onToken(message.content);
+    }
+    if (Array.isArray(message?.tool_calls) && message.tool_calls.length) {
+      toolCalls = message.tool_calls;
+    }
+  }
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) processLine(line);
+      if (done) break;
+    }
+    if (buffer.trim()) processLine(buffer);
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  if (streamError) throw new Error(streamError);
+  return { message: { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) } };
+}
+
 function makeServerMessage() {
   return {
     role: "system",
@@ -1454,18 +1544,15 @@ function createAppServer(options = {}) {
             message: round === 0 ? "Thinking about your request" : "Reviewing project results and planning the next step",
             status: "running"
           });
-          const result = await ollamaFetch(ollamaUrl, "/api/chat", {
-            timeoutMs: CHAT_TIMEOUT_MS,
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              model: selectedModel,
-              messages: ollamaMessages,
-              tools: MODEL_TOOLS,
-              stream: false,
-              keep_alive: "10m",
-              options: { num_ctx: contextLength, temperature: 0.15 }
-            })
+          const result = await ollamaChatStream(ollamaUrl, {
+            model: selectedModel,
+            messages: ollamaMessages,
+            tools: MODEL_TOOLS,
+            stream: true,
+            keep_alive: "10m",
+            options: { num_ctx: contextLength, temperature: 0.15 }
+          }, (token) => {
+            if (streamActivity) writeSseEvent(response, "token", { token });
           });
           const message = result.message;
           if (!message || typeof message.content !== "string") {

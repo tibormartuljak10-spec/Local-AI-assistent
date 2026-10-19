@@ -268,30 +268,36 @@ test("chat API provides local model status and proxies validated chat messages",
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     receivedChat = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    response.writeHead(200, { "content-type": "application/json" });
     const userMessage = [...receivedChat.messages].reverse().find((message) => message.role === "user");
     const hasToolResult = receivedChat.messages.some((message) => message.role === "tool");
+    let message;
     if (userMessage.content === "Create a project file." && !hasToolResult) {
-      response.end(JSON.stringify({
-        message: {
-          role: "assistant",
-          content: "",
-          tool_calls: [{
-            function: {
-              name: "write_project_file",
-              arguments: { path: "assistant-created.txt", content: "created by the local assistant" }
-            }
-          }]
-        }
-      }));
-      return;
-    }
-    response.end(JSON.stringify({
-      message: {
+      message = {
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          function: {
+            name: "write_project_file",
+            arguments: { path: "assistant-created.txt", content: "created by the local assistant" }
+          }
+        }]
+      };
+    } else {
+      message = {
         role: "assistant",
         content: hasToolResult ? "The file is saved." : "Hello from Ollama."
-      }
-    }));
+      };
+    }
+    response.writeHead(200, { "content-type": "application/x-ndjson" });
+    if (message.content.length > 5) {
+      const splitAt = Math.floor(message.content.length / 2);
+      response.write(`${JSON.stringify({ message: { role: "assistant", content: message.content.slice(0, splitAt) }, done: false })}\n`);
+      response.write(`${JSON.stringify({ message: { role: "assistant", content: message.content.slice(splitAt) }, done: false })}\n`);
+    }
+    response.end(`${JSON.stringify({
+      message: { ...message, content: message.content.length > 5 ? "" : message.content },
+      done: true
+    })}\n`);
   });
   const ollamaUrl = await start(ollama);
   const app = createUnauthenticatedTestServer({
@@ -348,6 +354,7 @@ test("chat API provides local model status and proxies validated chat messages",
   assert.match(script, /window\.desktopApi\.installOllamaAndModel/);
   assert.match(script, /async function readChatActivityStream/);
   assert.match(script, /accept: "text\/event-stream"/);
+  assert.match(script, /messages: history\.slice\(-24\)/);
   assert.match(script, /async function findPreviewPage\(\)/);
   assert.match(script, /No common HTML entry page was found/);
   assert.match(script, /Request needs attention/);
@@ -394,7 +401,8 @@ test("chat API provides local model status and proxies validated chat messages",
   assert.equal(chatResponse.status, 200);
   assert.deepEqual(await chatResponse.json(), { message: "Hello from Ollama." });
   assert.equal(receivedChat.model, "test-model:latest");
-  assert.deepEqual(receivedChat.options, { num_ctx: 32768, temperature: 0.15 });
+  assert.equal(receivedChat.stream, true);
+  assert.deepEqual(receivedChat.options, { num_ctx: 8192, temperature: 0.15 });
   assert.equal(receivedChat.keep_alive, "10m");
   assert.equal(receivedChat.messages[0].role, "system");
   assert.match(receivedChat.messages[0].content, /only in that folder/);
@@ -414,6 +422,18 @@ test("chat API provides local model status and proxies validated chat messages",
   assert.equal(receivedChat.tools.some((tool) => tool.function.name === "list_project_files"), true);
   assert.equal(receivedChat.tools.some((tool) => tool.function.name === "search_project_files"), true);
 
+  const streamingResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify({ workspaceId: selection.workspaceId, messages: [{ role: "user", content: "Say hello." }] })
+  });
+  const streamingEvents = (await streamingResponse.text()).split(/\r?\n\r?\n/);
+  const streamedTokens = streamingEvents
+    .filter((event) => event.startsWith("event: token"))
+    .map((event) => JSON.parse(event.split(/\r?\n/).find((line) => line.startsWith("data:")).slice(5).trimStart()).token);
+  assert.equal(streamedTokens.join(""), "Hello from Ollama.");
+  assert.equal(streamingEvents.some((event) => event.includes('event: result\ndata: {"message":"Hello from Ollama."}')), true);
+
   const toolResponse = await fetch(`${appUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "text/event-stream" },
@@ -422,6 +442,7 @@ test("chat API provides local model status and proxies validated chat messages",
   assert.equal(toolResponse.headers.get("content-type"), "text/event-stream; charset=utf-8");
   const activityStream = await toolResponse.text();
   assert.match(activityStream, /event: activity/);
+  assert.match(activityStream, /event: token/);
   assert.match(activityStream, /"message":"Updating project file · assistant-created\.txt","status":"running"/);
   assert.match(activityStream, /"message":"Updating project file · assistant-created\.txt","status":"complete"/);
   assert.match(activityStream, /event: result\ndata: \{"message":"The file is saved\."\}/);

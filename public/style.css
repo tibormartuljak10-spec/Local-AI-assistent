@@ -301,6 +301,7 @@ button { color: inherit; }
 .messages { display: flex; flex-direction: column; gap: 23px; padding: 35px 0 27px; }
 .message-row { display: flex; align-items: flex-start; gap: 11px; animation: appear .18s ease-out; }
 .message-row.user-row { justify-content: flex-end; }
+.message-row.streaming .message-text::after { display: inline-block; margin-left: 2px; color: #b69bff; content: "▍"; animation: pulse .8s infinite; }
 .avatar { display: grid; width: 27px; height: 27px; flex: 0 0 auto; place-items: center; border: 1px solid #303d4c; border-radius: 7px; background: #192433; color: #a5d6ff; font-size: 13px; }
 .user-avatar { border-color: #33506b; background: #1c3449; color: #a8d7ff; font-size: 11px; }
 .message-content { max-width: min(100% - 40px, 650px); }

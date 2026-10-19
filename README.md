@@ -24,6 +24,8 @@ The installer packages the desktop runtime and app. On first setup, choose betwe
 
 You can switch between installed models at any time with the top-bar model selector. If a model is not installed, select it and choose **Install**; the app only downloads it after you confirm in the setup dialog.
 
+Assistant responses now appear as the model generates them instead of waiting for the full reply. The default context is 8,192 tokens to reduce prompt-processing time; you can increase it with `OLLAMA_NUM_CTX` if you need more conversation or code context. Actual speed still depends on your PC and the selected local model.
+
 Software is not installed silently: the app asks before starting setup. Once set up, Ollama and the model run on this PC; chat prompts are not sent to a cloud API.
 
 ## Use the assistant
@@ -53,7 +55,7 @@ Optional environment variables can be set before starting the desktop app from a
 ```powershell
 $env:OLLAMA_URL = "http://127.0.0.1:11434"
 $env:OLLAMA_MODEL = "qwen3-coder"
-$env:OLLAMA_NUM_CTX = "32768"
+$env:OLLAMA_NUM_CTX = "8192"
 npm run start:desktop
 ```
 
