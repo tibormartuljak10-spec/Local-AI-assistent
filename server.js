@@ -1549,6 +1549,7 @@ function createAppServer(options = {}) {
             messages: ollamaMessages,
             tools: MODEL_TOOLS,
             stream: true,
+            think: false,
             keep_alive: "10m",
             options: { num_ctx: contextLength, temperature: 0.15 }
           }, (token) => {

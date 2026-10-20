@@ -402,6 +402,7 @@ test("chat API provides local model status and proxies validated chat messages",
   assert.deepEqual(await chatResponse.json(), { message: "Hello from Ollama." });
   assert.equal(receivedChat.model, "test-model:latest");
   assert.equal(receivedChat.stream, true);
+  assert.equal(receivedChat.think, false);
   assert.deepEqual(receivedChat.options, { num_ctx: 8192, temperature: 0.15 });
   assert.equal(receivedChat.keep_alive, "10m");
   assert.equal(receivedChat.messages[0].role, "system");

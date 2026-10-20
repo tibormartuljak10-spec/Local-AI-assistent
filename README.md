@@ -24,7 +24,7 @@ The installer packages the desktop runtime and app. On first setup, choose betwe
 
 You can switch between installed models at any time with the top-bar model selector. If a model is not installed, select it and choose **Install**; the app only downloads it after you confirm in the setup dialog.
 
-Assistant responses now appear as the model generates them instead of waiting for the full reply. The default context is 8,192 tokens to reduce prompt-processing time; you can increase it with `OLLAMA_NUM_CTX` if you need more conversation or code context. Actual speed still depends on your PC and the selected local model.
+Assistant responses now appear as the model generates them instead of waiting for the full reply. Both Qwen3 models run with reasoning disabled for faster answers; this may reduce the quality of responses to complex, multi-step tasks. The default context is 8,192 tokens to reduce prompt-processing time; you can increase it with `OLLAMA_NUM_CTX` if you need more conversation or code context. Actual speed still depends on your PC and the selected local model.
 
 Software is not installed silently: the app asks before starting setup. Once set up, Ollama and the model run on this PC; chat prompts are not sent to a cloud API.
 
