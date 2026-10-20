@@ -12,6 +12,17 @@ const elements = {
   appUpdate: document.querySelector("#app-update"),
   appUpdateButton: document.querySelector("#app-update-button"),
   appUpdateStatus: document.querySelector("#app-update-status"),
+  askBackdrop: document.querySelector("#ask-backdrop"),
+  askClear: document.querySelector("#ask-clear"),
+  askClose: document.querySelector("#ask-close"),
+  askEmpty: document.querySelector("#ask-empty"),
+  askForm: document.querySelector("#ask-form"),
+  askInput: document.querySelector("#ask-input"),
+  askMessages: document.querySelector("#ask-messages"),
+  askPanel: document.querySelector("#ask-panel"),
+  askSend: document.querySelector("#ask-send"),
+  askToggle: document.querySelector("#ask-toggle"),
+  askTyping: document.querySelector("#ask-typing"),
   conversationList: document.querySelector("#conversation-list"),
   chatManagementCancel: document.querySelector("#chat-management-cancel"),
   chatManagementConfirm: document.querySelector("#chat-management-confirm"),
@@ -85,7 +96,9 @@ const elements = {
 };
 
 let history = [];
+let questionHistory = [];
 let pending = false;
+let questionPending = false;
 let titleSet = false;
 let workspaceId = null;
 let folderPickerOpen = false;
@@ -107,6 +120,7 @@ let activityItems = new Map();
 let chatManagementAction = null;
 let chatManagementBusy = false;
 let appUpdateState = "idle";
+let questionPanelOpen = window.matchMedia("(min-width: 1121px)").matches;
 
 function resolveInstalledModel(name) {
   if (installedModels.includes(name)) return name;
@@ -157,6 +171,27 @@ function setWorkspaceView(view) {
   elements.chatViewButton.setAttribute("aria-pressed", String(showChat));
   elements.previewViewButton.setAttribute("aria-pressed", String(showPreview));
   elements.terminalViewButton.setAttribute("aria-pressed", String(showTerminal));
+}
+
+function setQuestionPanelOpen(open) {
+  questionPanelOpen = Boolean(open);
+  const compact = window.matchMedia("(max-width: 1120px)").matches;
+  elements.askPanel.classList.toggle("open", compact && questionPanelOpen);
+  elements.askPanel.classList.toggle("hidden", !compact && !questionPanelOpen);
+  elements.askBackdrop.classList.toggle("visible", compact && questionPanelOpen);
+  elements.askBackdrop.hidden = !compact || !questionPanelOpen;
+  elements.askToggle.setAttribute("aria-expanded", String(questionPanelOpen));
+  elements.askToggle.setAttribute("aria-label", questionPanelOpen ? "Close general questions" : "Open general questions");
+}
+
+function clearQuestionChat() {
+  questionHistory = [];
+  elements.askMessages.querySelectorAll(".ask-message").forEach((message) => message.remove());
+  elements.askEmpty.classList.remove("hidden");
+  elements.askInput.value = "";
+  elements.askTyping.classList.add("hidden");
+  questionPending = false;
+  updateQuestionSendButton();
 }
 
 function resetActivity() {
@@ -561,6 +596,7 @@ async function checkAuthentication() {
 function showAuthentication() {
     account = null;
     workspaceId = null;
+    clearQuestionChat();
     resetActivity();
     resetTerminalState();
     chatId = null;
@@ -902,7 +938,7 @@ function updateSendButton() {
   elements.connectFolder.disabled = locked;
   elements.topConnectFolder.disabled = locked;
   elements.welcomeConnectFolder.disabled = locked;
-  elements.logoutButton.disabled = locked;
+  elements.logoutButton.disabled = locked || questionPending;
   elements.modelInstall.disabled = locked;
   elements.previewViewButton.disabled = !workspaceId || locked;
   elements.terminalViewButton.disabled = !workspaceId || locked;
@@ -972,7 +1008,31 @@ function addMessage(role, content) {
   return text;
 }
 
-function appendAssistantContent(container, content) {
+function addQuestionMessage(role, content) {
+  elements.askEmpty.classList.add("hidden");
+  const row = document.createElement("article");
+  row.className = `ask-message ${role}`;
+  const avatar = document.createElement("span");
+  avatar.className = "ask-avatar";
+  avatar.setAttribute("aria-hidden", "true");
+  avatar.textContent = role === "user" ? "You" : "✳";
+  const bubble = document.createElement("div");
+  bubble.className = "ask-bubble";
+  const label = document.createElement("div");
+  label.className = "message-role";
+  label.textContent = role === "user" ? "You" : "Assistant";
+  const text = document.createElement("div");
+  text.className = "message-text";
+  if (role === "assistant") appendAssistantContent(text, content, { allowTerminalRun: false });
+  else text.textContent = content;
+  bubble.append(label, text);
+  row.append(avatar, bubble);
+  elements.askMessages.insertBefore(row, elements.askTyping);
+  elements.askMessages.scrollTop = elements.askMessages.scrollHeight;
+  return text;
+}
+
+function appendAssistantContent(container, content, { allowTerminalRun = true } = {}) {
   const codeBlockPattern = /```([^\n`]*)\r?\n([\s\S]*?)(?:```|$)/g;
   let lastIndex = 0;
   let match;
@@ -1006,7 +1066,7 @@ function appendAssistantContent(container, content) {
       window.setTimeout(() => { copyButton.textContent = "Copy"; }, 1600);
     });
     header.append(label);
-    if (/^(powershell|pwsh|ps1)$/i.test(language)) {
+    if (allowTerminalRun && /^(powershell|pwsh|ps1)$/i.test(language)) {
       const runButton = document.createElement("button");
       runButton.className = "copy-code-button";
       runButton.type = "button";
@@ -1122,6 +1182,75 @@ async function sendMessage(text) {
   }
 }
 
+function updateQuestionSendButton() {
+  elements.askInput.disabled = questionPending;
+  elements.askSend.disabled = questionPending || !elements.askInput.value.trim();
+  elements.askClear.disabled = questionPending;
+  updateSendButton();
+}
+
+function startQuestionChat() {
+  if (questionPending) return;
+  clearQuestionChat();
+  elements.askInput.focus();
+}
+
+async function sendQuestion(text) {
+  const content = text.trim();
+  if (!content || questionPending) return;
+  questionHistory.push({ role: "user", content });
+  addQuestionMessage("user", content);
+  elements.askInput.value = "";
+  questionPending = true;
+  elements.askTyping.classList.remove("hidden");
+  updateQuestionSendButton();
+  let streamingAnswer = null;
+  try {
+    const response = await fetch("/api/ask", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ model: selectedModel, messages: questionHistory.slice(-20) })
+    });
+    if (!response.ok) {
+      const result = await response.json();
+      const error = new Error(result.error || `Request failed (${response.status}).`);
+      error.status = response.status;
+      throw error;
+    }
+    const result = await readChatActivityStream(response, (token) => {
+      if (!streamingAnswer) {
+        elements.askTyping.classList.add("hidden");
+        streamingAnswer = addQuestionMessage("assistant", "");
+        streamingAnswer.closest(".ask-message").classList.add("streaming");
+      }
+      streamingAnswer.textContent += token;
+      elements.askMessages.scrollTop = elements.askMessages.scrollHeight;
+    });
+    if (typeof result.message !== "string") throw new Error("The question assistant returned an invalid response.");
+    if (streamingAnswer) {
+      streamingAnswer.replaceChildren();
+      appendAssistantContent(streamingAnswer, result.message, { allowTerminalRun: false });
+      streamingAnswer.closest(".ask-message").classList.remove("streaming");
+    } else {
+      addQuestionMessage("assistant", result.message);
+    }
+    questionHistory.push({ role: "assistant", content: result.message });
+  } catch (error) {
+    if (error.status === 401) showAuthentication();
+    if (streamingAnswer) {
+      streamingAnswer.closest(".ask-message").classList.remove("streaming");
+      streamingAnswer.textContent += `\n\n[Response interrupted: ${error.message}]`;
+    } else if (error.status !== 401) {
+      addQuestionMessage("assistant", `I couldn't answer that. ${error.message}`);
+    }
+  } finally {
+    questionPending = false;
+    elements.askTyping.classList.add("hidden");
+    updateQuestionSendButton();
+    elements.askInput.focus();
+  }
+}
+
 function updateFolderDetails(name) {
   elements.folderName.textContent = name || "No folder connected";
   elements.folderStatus.textContent = name ? "Connected for this chat" : "Choose a folder to begin";
@@ -1230,6 +1359,23 @@ elements.chatForm.addEventListener("submit", (event) => {
   sendMessage(elements.input.value);
 });
 
+elements.askForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  sendQuestion(elements.askInput.value);
+});
+elements.askInput.addEventListener("input", updateQuestionSendButton);
+elements.askInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    if (!questionPending) sendQuestion(elements.askInput.value);
+  }
+});
+elements.askToggle.addEventListener("click", () => setQuestionPanelOpen(!questionPanelOpen));
+elements.askClose.addEventListener("click", () => setQuestionPanelOpen(false));
+elements.askBackdrop.addEventListener("click", () => setQuestionPanelOpen(false));
+elements.askClear.addEventListener("click", startQuestionChat);
+window.addEventListener("resize", () => setQuestionPanelOpen(questionPanelOpen));
+
 elements.authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   elements.authSubmit.disabled = true;
@@ -1333,6 +1479,7 @@ elements.logoutButton.addEventListener("click", async () => {
     chatTitle = "New conversation";
     history = [];
     savedChats = [];
+    clearQuestionChat();
     elements.messages.replaceChildren();
     updateFolderDetails(null);
     elements.previewFrame.removeAttribute("src");
@@ -1458,10 +1605,15 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     startNewChat();
   }
-  if (event.key === "Escape") closeSidebar();
+  if (event.key === "Escape") {
+    closeSidebar();
+    if (window.matchMedia("(max-width: 1120px)").matches) setQuestionPanelOpen(false);
+  }
 });
 
 updateFolderDetails(null);
 discardChat();
 setAuthMode("login");
+setQuestionPanelOpen(questionPanelOpen);
+updateQuestionSendButton();
 checkAuthentication();

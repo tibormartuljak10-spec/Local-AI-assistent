@@ -4,6 +4,7 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { createHash } = require("node:crypto");
 const { createAppServer, createFileTools, getOllamaUrl } = require("../server");
 
 async function start(server) {
@@ -52,6 +53,8 @@ test("Windows desktop build packages a standalone x64 installer and embeds local
   assert.match(desktopMain, /winget/);
   assert.match(desktopMain, /OLLAMA_MODEL = process\.env\.OLLAMA_MODEL \|\| "qwen3-coder"/);
   assert.match(desktopMain, /\["pull", modelName\]/);
+  assert.match(desktopMain, /dialog\.showOpenDialog\(mainWindow/);
+  assert.match(desktopMain, /properties: \["openDirectory"\]/);
   assert.match(desktopMain, /MODEL_CHOICES = \["qwen3-coder", "qwen3:1\.7b"\]/);
   assert.match(desktopMain, /return await installOllamaAndModel\(modelName \|\| OLLAMA_MODEL\)/);
   assert.match(desktopMain, /autoUpdater\.autoDownload = false/);
@@ -341,6 +344,9 @@ test("chat API provides local model status and proxies validated chat messages",
   assert.match(page, /id="desktop-setup-dialog"/);
   assert.match(page, /Install Ollama \+ model/);
   assert.match(page, /id="activity-panel"/);
+  assert.match(page, /id="ask-panel"/);
+  assert.match(page, /no folder access/);
+  assert.match(page, /cannot read or edit project files/i);
   assert.match(page, /aria-label="Assistant project activity"/);
   assert.match(page, /id="chat-management-dialog"/);
   assert.match(page, /id="chat-title-input"/);
@@ -353,6 +359,9 @@ test("chat API provides local model status and proxies validated chat messages",
   assert.match(script, /function resetTerminalState\(\)/);
   assert.match(script, /window\.desktopApi\.installOllamaAndModel/);
   assert.match(script, /async function readChatActivityStream/);
+  assert.match(script, /async function sendQuestion/);
+  assert.match(script, /fetch\("\/api\/ask"/);
+  assert.match(script, /allowTerminalRun: false/);
   assert.match(script, /accept: "text\/event-stream"/);
   assert.match(script, /messages: history\.slice\(-24\)/);
   assert.match(script, /async function findPreviewPage\(\)/);
@@ -422,6 +431,26 @@ test("chat API provides local model status and proxies validated chat messages",
   assert.equal(receivedChat.tools.some((tool) => tool.function.name === "write_project_file"), true);
   assert.equal(receivedChat.tools.some((tool) => tool.function.name === "list_project_files"), true);
   assert.equal(receivedChat.tools.some((tool) => tool.function.name === "search_project_files"), true);
+
+  const questionResponse = await fetch(`${appUrl}/api/ask`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify({
+      model: "test-model",
+      messages: [{ role: "user", content: "What is a closure?" }]
+    })
+  });
+  assert.equal(questionResponse.status, 200);
+  assert.equal(questionResponse.headers.get("content-type"), "text/event-stream; charset=utf-8");
+  const questionStream = await questionResponse.text();
+  assert.match(questionStream, /event: token/);
+  assert.match(questionStream, /event: result\ndata: \{"message":"Hello from Ollama\."\}/);
+  assert.equal(receivedChat.model, "test-model:latest");
+  assert.equal(receivedChat.think, false);
+  assert.equal(Object.hasOwn(receivedChat, "tools"), false);
+  assert.equal(receivedChat.messages[0].role, "system");
+  assert.match(receivedChat.messages[0].content, /cannot access the user's PC/);
+  assert.deepEqual(receivedChat.messages.slice(1), [{ role: "user", content: "What is a closure?" }]);
 
   const streamingResponse = await fetch(`${appUrl}/api/chat`, {
     method: "POST",
@@ -659,6 +688,13 @@ test("chat API rejects cross-origin browser requests", async (t) => {
   });
   assert.equal(response.status, 403);
 
+  const askResponse = await fetch(`${appUrl}/api/ask`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://attacker.example" },
+    body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] })
+  });
+  assert.equal(askResponse.status, 403);
+
   const pickerResponse = await fetch(`${appUrl}/api/folders/select`, {
     method: "POST",
     headers: { "content-type": "application/json", origin: "https://attacker.example" },
@@ -668,7 +704,7 @@ test("chat API rejects cross-origin browser requests", async (t) => {
   assert.equal(pickerCalls, 0);
 });
 
-test("accounts isolate and persist saved chats while sessions and folders stay temporary", async (t) => {
+test("accounts persist sign-in until explicit logout while folders stay temporary", async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "local-assistant-accounts-"));
   const projectRoot = path.join(tempRoot, "chosen-project");
   const storagePath = path.join(tempRoot, "account-data", "data.json");
@@ -694,6 +730,12 @@ test("accounts isolate and persist saved chats while sessions and folders stay t
 
   const unauthenticatedChats = await fetch(`${appUrl}/api/chats`);
   assert.equal(unauthenticatedChats.status, 401);
+  const unauthenticatedAsk = await fetch(`${appUrl}/api/ask`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: appUrl },
+    body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] })
+  });
+  assert.equal(unauthenticatedAsk.status, 401);
   const unauthenticatedFolder = await fetch(`${appUrl}/api/folders/select`, {
     method: "POST",
     headers: { "content-type": "application/json", origin: appUrl },
@@ -721,6 +763,12 @@ test("accounts isolate and persist saved chats while sessions and folders stay t
   }, null);
   assert.equal(missingOrigin.status, 403);
   const aliceCookie = await register("Alice");
+  const aliceToken = aliceCookie.split("=")[1];
+  const registeredData = JSON.parse(await fs.readFile(storagePath, "utf8"));
+  assert.equal(registeredData.sessions.some((session) =>
+    session.tokenHash === createHash("sha256").update(aliceToken).digest("hex")
+  ), true);
+  assert.equal(JSON.stringify(registeredData.sessions).includes(aliceToken), false);
   const cookieResponse = await authRequest("login", {
     username: "Alice",
     password: "strong-local-passphrase"
@@ -728,6 +776,7 @@ test("accounts isolate and persist saved chats while sessions and folders stay t
   assert.equal(cookieResponse.status, 200);
   assert.match(cookieResponse.headers.get("set-cookie"), /HttpOnly/);
   assert.match(cookieResponse.headers.get("set-cookie"), /SameSite=Strict/);
+  assert.match(cookieResponse.headers.get("set-cookie"), /Max-Age=\d{8,}/);
 
   const folderSelection = await fetch(`${appUrl}/api/folders/select`, {
     method: "POST",
@@ -948,8 +997,10 @@ test("accounts isolate and persist saved chats while sessions and folders stay t
   });
   appUrl = await start(app);
 
-  const expiredSession = await fetch(`${appUrl}/api/chats`, { headers: { cookie: aliceCookie } });
-  assert.equal(expiredSession.status, 401);
+  const persistentSession = await fetch(`${appUrl}/api/chats`, { headers: { cookie: aliceCookie } });
+  assert.equal(persistentSession.status, 200);
+  const persistentIdentity = await fetch(`${appUrl}/api/auth/me`, { headers: { cookie: aliceCookie } });
+  assert.equal((await persistentIdentity.json()).user.username, "Alice");
   const login = await authRequest("login", {
     username: "alice",
     password: "strong-local-passphrase"
@@ -1016,6 +1067,11 @@ test("accounts isolate and persist saved chats while sessions and folders stay t
     headers: { origin: appUrl, cookie: refreshedCookie }
   });
   assert.equal(logout.status, 200);
+  const loggedOutToken = refreshedCookie.split("=")[1];
+  const dataAfterLogout = JSON.parse(await fs.readFile(storagePath, "utf8"));
+  assert.equal(dataAfterLogout.sessions.some((session) =>
+    session.tokenHash === createHash("sha256").update(loggedOutToken).digest("hex")
+  ), false);
   const afterLogout = await fetch(`${appUrl}/api/chats`, { headers: { cookie: refreshedCookie } });
   assert.equal(afterLogout.status, 401);
   const logoutRun = await fetch(`${appUrl}/api/terminal/approve`, {

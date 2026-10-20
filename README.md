@@ -30,15 +30,16 @@ Software is not installed silently: the app asks before starting setup. Once set
 
 ## Use the assistant
 
-1. Start the desktop app and create a local account or sign in.
-2. Choose an existing project folder using the Windows folder picker.
+1. Start the desktop app and create a local account or sign in. Your account stays signed in after app restarts until you choose **Sign out**.
+2. Choose an existing project folder in the native Windows folder picker.
 3. Describe the website, app, or code change you want. The assistant can inspect, search, read, and edit files inside that chosen folder.
 4. Watch the live **Project activity** panel in chat to see when the assistant is thinking, listing or searching project files, reading a file, or updating one. Each file action shows its project-relative path and whether it succeeded.
-5. Rename or delete saved conversations with the pencil and × buttons beside a chat in the sidebar. Deletion asks for confirmation, then removes the chat from the sidebar immediately; disconnecting its temporary folder happens afterward.
-6. Choose **Preview** and select **Find page** to locate common HTML entry points, or enter a project-relative path yourself. Preview is for static HTML/CSS/JavaScript; it does not run backend servers.
-7. Open **Terminal** for common command shortcuts or enter a Windows PowerShell command. Shortcuts only fill the command; you can edit it before requesting approval. Read the exact command and choose **Approve and run** only if you trust it. You can also select **Review & run** on a PowerShell code block in chat.
+5. Use the **Ask** panel on the right for general questions. It uses the selected Ollama model but has no selected-folder context, file tools, or terminal actions.
+6. Rename or delete saved conversations with the pencil and × buttons beside a chat in the sidebar. Deletion asks for confirmation, then removes the chat from the sidebar immediately; disconnecting its temporary folder happens afterward.
+7. Choose **Preview** and select **Find page** to locate common HTML entry points, or enter a project-relative path yourself. Preview is for static HTML/CSS/JavaScript; it does not run backend servers.
+8. Open **Terminal** for common command shortcuts or enter a Windows PowerShell command. Shortcuts only fill the command; you can edit it before requesting approval. Read the exact command and choose **Approve and run** only if you trust it. You can also select **Review & run** on a PowerShell code block in the project chat.
 
-Each new chat connects to a folder you choose. Folder access tokens and paths are temporary and are not saved with chat history. Sign in again after restarting the app; saved chats remain on this PC.
+Each new project chat connects to a folder you choose. Folder access tokens and paths are temporary and are not saved with chat history. Your sign-in token is stored as a hash with local account data and is removed when you choose **Sign out**.
 
 ## Terminal and folder access
 
@@ -48,7 +49,7 @@ The app's local web server binds to loopback only. The static preview is sandbox
 
 ## Local data and configuration
 
-Account records and saved conversations are stored in `%LOCALAPPDATA%\LocalProjectAssistant\data.json` (or `~/.local-project-assistant/data.json` if `LOCALAPPDATA` is unavailable). Passwords are stored as salted scrypt hashes. Keep the data file on a trusted Windows account. This is a local single-user app, not an internet-facing service.
+Account records, saved conversations, and hashed sign-in tokens are stored in `%LOCALAPPDATA%\LocalProjectAssistant\data.json` (or `~/.local-project-assistant/data.json` if `LOCALAPPDATA` is unavailable). Passwords are stored as salted scrypt hashes. Keep the data file on a trusted Windows account. This is a local single-user app, not an internet-facing service.
 
 Optional environment variables can be set before starting the desktop app from a terminal:
 

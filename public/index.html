@@ -118,6 +118,9 @@
             </div>
           </div>
           <div class="topbar-meta">
+            <button class="ask-toggle" id="ask-toggle" type="button" aria-expanded="true" aria-controls="ask-panel">
+              <span aria-hidden="true">✧</span> Ask
+            </button>
             <div class="view-switcher" role="group" aria-label="Workspace view">
               <button class="view-tab active" id="chat-view-button" type="button" aria-pressed="true">Chat</button>
               <button class="view-tab" id="preview-view-button" type="button" aria-pressed="false" disabled>Preview</button>
@@ -260,8 +263,43 @@
           </div>
         </footer>
       </main>
+      <aside class="ask-panel" id="ask-panel" aria-label="General questions">
+        <header class="ask-header">
+          <div>
+            <strong>Ask anything</strong>
+            <span>General questions · no folder access</span>
+          </div>
+          <div class="ask-header-actions">
+            <button class="ask-clear" id="ask-clear" type="button" title="Start a new question chat">New</button>
+            <button class="ask-close" id="ask-close" type="button" aria-label="Close questions panel">×</button>
+          </div>
+        </header>
+        <div class="ask-privacy"><span aria-hidden="true">◈</span> Uses your selected Ollama model. Cannot read or edit project files.</div>
+        <div class="ask-messages" id="ask-messages" role="log" aria-live="polite">
+          <div class="ask-empty" id="ask-empty">
+            <span aria-hidden="true">✧</span>
+            <strong>What would you like to know?</strong>
+            <p>Ask general questions, get explanations, or brainstorm ideas. This chat is separate from your workspace.</p>
+          </div>
+          <div class="ask-typing hidden" id="ask-typing" aria-label="Answering">
+            <span></span><span></span><span></span><small>Thinking</small>
+          </div>
+        </div>
+        <div class="ask-compose-area">
+          <form class="ask-composer" id="ask-form">
+            <label class="visually-hidden" for="ask-input">Ask a general question</label>
+            <textarea id="ask-input" rows="2" maxlength="20000" placeholder="Ask anything…" autocomplete="off"></textarea>
+            <div class="ask-composer-toolbar">
+              <span><kbd>Enter</kbd> to send</span>
+              <button class="ask-send" id="ask-send" type="submit" aria-label="Send question" disabled>↑</button>
+            </div>
+          </form>
+          <p>Local AI can make mistakes. Verify important information.</p>
+        </div>
+      </aside>
     </div>
     <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+    <div class="ask-backdrop" id="ask-backdrop" hidden></div>
     <dialog class="terminal-approval-dialog chat-management-dialog" id="chat-management-dialog" aria-labelledby="chat-management-title">
       <form method="dialog" class="terminal-approval-card">
         <p class="eyebrow" id="chat-management-eyebrow">SAVED CHAT</p>

@@ -323,7 +323,16 @@ if (process.platform !== "win32") {
 
     app.whenReady().then(async () => {
       try {
-        appServer = createAppServer();
+        appServer = createAppServer({
+          pickFolder: async () => {
+            const result = await dialog.showOpenDialog(mainWindow, {
+              title: "Choose a project folder for this chat",
+              buttonLabel: "Connect folder",
+              properties: ["openDirectory"]
+            });
+            return result.canceled ? null : result.filePaths[0] || null;
+          }
+        });
         appServer.on("error", async (error) => {
           await dialog.showMessageBox({
             type: "error",

@@ -2,7 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { execFile } = require("node:child_process");
-const { randomBytes, randomUUID, scrypt, timingSafeEqual } = require("node:crypto");
+const { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } = require("node:crypto");
 const os = require("node:os");
 
 const PROJECT_ROOT = __dirname;
@@ -18,7 +18,7 @@ const MAX_SEARCHED_DIRECTORIES = 500;
 const MAX_SEARCH_RESULTS = 30;
 const MAX_ACTIVE_WORKSPACES = 16;
 const WORKSPACE_TTL_MS = 12 * 60 * 60 * 1000;
-const AUTH_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const AUTH_COOKIE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60;
 const AUTH_COOKIE = "local_project_assistant_session";
 const PASSWORD_MIN_LENGTH = 10;
 const MAX_STORED_CHATS_PER_USER = 200;
@@ -480,13 +480,15 @@ async function loadAuthStore(storePath) {
       !parsed ||
       parsed.version !== 1 ||
       !Array.isArray(parsed.users) ||
-      !Array.isArray(parsed.chats)
+      !Array.isArray(parsed.chats) ||
+      (parsed.sessions !== undefined && !Array.isArray(parsed.sessions))
     ) {
       throw new Error("The local account and chat store has an invalid format.");
     }
+    if (!parsed.sessions) parsed.sessions = [];
     return parsed;
   } catch (error) {
-    if (error.code === "ENOENT") return { version: 1, users: [], chats: [] };
+    if (error.code === "ENOENT") return { version: 1, users: [], chats: [], sessions: [] };
     throw error;
   }
 }
@@ -509,6 +511,10 @@ function validatePassword(value) {
     throw error;
   }
   return value;
+}
+
+function hashSessionToken(token) {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 function validateChatTitle(value) {
@@ -862,6 +868,13 @@ function makeServerMessage() {
   };
 }
 
+function makeQuestionMessage() {
+  return {
+    role: "system",
+    content: "You are a helpful local assistant for general questions, explanations, and brainstorming. You cannot access the user's PC, selected project folder, files, or run commands. Do not claim to see or modify files. If asked about the project, explain that the coding chat can inspect the selected folder."
+  };
+}
+
 function getContextLength(value = process.env.OLLAMA_NUM_CTX || DEFAULT_CONTEXT_LENGTH) {
   const contextLength = Number(value);
   if (!Number.isSafeInteger(contextLength) || contextLength < 4096 || contextLength > 262144) {
@@ -912,25 +925,24 @@ function createAppServer(options = {}) {
     return nextWrite;
   }
 
-  function currentUser(request) {
+  async function currentUser(request) {
     const token = parseCookies(request.headers.cookie).get(AUTH_COOKIE);
     if (!token || !/^[a-f0-9]{64}$/i.test(token)) return null;
-    const session = authSessions.get(token);
-    if (!session) return null;
-    if (session.expiresAt <= Date.now()) {
-      authSessions.delete(token);
-      removeUserWorkspaces(session.id);
-      for (const [approvalId, approval] of terminalApprovals) {
-        if (approval.userId === session.id) terminalApprovals.delete(approvalId);
-      }
-      return null;
-    }
+    const activeSession = authSessions.get(token);
+    if (activeSession) return activeSession;
+    const store = await getAuthStore();
+    const storedSession = store.sessions.find((entry) => entry.tokenHash === hashSessionToken(token));
+    if (!storedSession) return null;
+    const user = store.users.find((entry) => entry.id === storedSession.userId);
+    if (!user) return null;
+    const session = { id: user.id, username: user.username };
+    authSessions.set(token, session);
     return session;
   }
 
   async function authenticatedUser(request) {
     if (!requireAuthentication) return { id: "test-user", username: "test-user" };
-    const session = currentUser(request);
+    const session = await currentUser(request);
     if (!session) {
       const error = new Error("Sign in to use saved chats and project folders.");
       error.statusCode = 401;
@@ -947,16 +959,17 @@ function createAppServer(options = {}) {
     }
   }
 
-  function createSession(user, response) {
+  async function createSession(user, response) {
     const token = randomBytes(32).toString("hex");
-    const expiresAt = Date.now() + AUTH_SESSION_TTL_MS;
-    authSessions.set(token, { id: user.id, username: user.username, expiresAt });
+    const store = await getAuthStore();
+    store.sessions.push({ tokenHash: hashSessionToken(token), userId: user.id });
+    await persistAuthStore(store);
+    authSessions.set(token, { id: user.id, username: user.username });
     jsonResponse(response, 200, {
       authenticated: true,
-      user: { id: user.id, username: user.username },
-      expiresAt: new Date(expiresAt).toISOString()
+      user: { id: user.id, username: user.username }
     }, {
-      "set-cookie": `${AUTH_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(AUTH_SESSION_TTL_MS / 1000)}`
+      "set-cookie": `${AUTH_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${AUTH_COOKIE_MAX_AGE_SECONDS}`
     });
   }
 
@@ -999,7 +1012,7 @@ function createAppServer(options = {}) {
     });
     registrationQueue = registration.then(() => {}, () => {});
     const user = await registration;
-    createSession(user, response);
+    await createSession(user, response);
   }
 
   async function loginAccount(request, response, port) {
@@ -1030,7 +1043,7 @@ function createAppServer(options = {}) {
       error.statusCode = 401;
       throw error;
     }
-    createSession(user, response);
+    await createSession(user, response);
   }
 
   async function getInstalledModels(forceRefresh = false) {
@@ -1098,15 +1111,14 @@ function createAppServer(options = {}) {
       }
 
       if (request.method === "GET" && url.pathname === "/api/auth/me") {
-        const session = currentUser(request);
+        const session = await currentUser(request);
         if (!session) {
           jsonResponse(response, 200, { authenticated: false, user: null });
           return;
         }
         jsonResponse(response, 200, {
           authenticated: true,
-          user: { id: session.id, username: session.username },
-          expiresAt: new Date(session.expiresAt).toISOString()
+          user: { id: session.id, username: session.username }
         });
         return;
       }
@@ -1124,14 +1136,23 @@ function createAppServer(options = {}) {
       if (request.method === "POST" && url.pathname === "/api/auth/logout") {
         requireSameOrigin(request, localPort);
         const token = parseCookies(request.headers.cookie).get(AUTH_COOKIE);
-        const session = token && authSessions.get(token);
+        const session = token ? await currentUser(request) : null;
         if (session) {
           removeUserWorkspaces(session.id);
           for (const [approvalId, approval] of terminalApprovals) {
             if (approval.userId === session.id) terminalApprovals.delete(approvalId);
           }
         }
-        if (token) authSessions.delete(token);
+        if (token) {
+          authSessions.delete(token);
+          const store = await getAuthStore();
+          const tokenHash = hashSessionToken(token);
+          const remainingSessions = store.sessions.filter((entry) => entry.tokenHash !== tokenHash);
+          if (remainingSessions.length !== store.sessions.length) {
+            store.sessions = remainingSessions;
+            await persistAuthStore(store);
+          }
+        }
         jsonResponse(response, 200, { authenticated: false }, {
           "set-cookie": `${AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`
         });
@@ -1485,6 +1506,67 @@ function createAppServer(options = {}) {
           removeWorkspace(body.workspaceId);
         }
         jsonResponse(response, 200, { revoked: Boolean(workspace && workspace.userId === user.id) });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/ask") {
+        await authenticatedUser(request);
+        requireSameOrigin(request, localPort);
+        const body = await readJsonBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          const error = new Error("Question request must be a JSON object.");
+          error.statusCode = 400;
+          throw error;
+        }
+        const messages = validateMessages(body.messages);
+        const requestedModel = typeof body.model === "string" && body.model.trim()
+          ? body.model.trim()
+          : model;
+        const availableModels = await getInstalledModels();
+        const selectedModel = availableModels.includes(requestedModel)
+          ? requestedModel
+          : availableModels.includes(`${requestedModel}:latest`)
+            ? `${requestedModel}:latest`
+            : null;
+        if (!selectedModel) {
+          const error = new Error("That model is not installed in Ollama. Refresh the model list or choose an installed model.");
+          error.statusCode = 400;
+          throw error;
+        }
+        const streamActivity = String(request.headers.accept || "").includes("text/event-stream");
+        if (streamActivity) {
+          response.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache, no-transform",
+            "connection": "keep-alive",
+            "x-content-type-options": "nosniff"
+          });
+          response.flushHeaders();
+        }
+        const result = await ollamaChatStream(ollamaUrl, {
+          model: selectedModel,
+          messages: [makeQuestionMessage(), ...messages.slice(-20)],
+          stream: true,
+          think: false,
+          keep_alive: "10m",
+          options: { num_ctx: contextLength, temperature: 0.15 }
+        }, (token) => {
+          if (streamActivity) writeSseEvent(response, "token", { token });
+        });
+        if (result.message.tool_calls?.length) {
+          throw new Error("The question assistant cannot perform project actions.");
+        }
+        const answer = result.message.content;
+        if (typeof answer !== "string" || !answer) {
+          throw new Error("Ollama returned an empty answer.");
+        }
+        if (streamActivity) {
+          writeSseEvent(response, "result", { message: answer });
+          writeSseEvent(response, "done", {});
+          response.end();
+          return;
+        }
+        jsonResponse(response, 200, { message: answer });
         return;
       }
 
